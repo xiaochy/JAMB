@@ -1,0 +1,455 @@
+<title>Track Gallery</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  /* Deliberately single-theme (white ground), per explicit request --
+     painted directly rather than following the viewer's dark/light state. */
+  :root {
+    --bg: #ffffff;
+    --panel: #f4f5f7;
+    --panel-border: #e1e4e8;
+    --text: #1c2128;
+    --text-dim: #6b7280;
+    --accent: #0f8fa3;
+    --accent-soft: #e3f3f5;
+    --track-lo: #ff3b1f;
+    --track-hi: #ffb800;
+    --ok: #1a8a4a;
+    --fail: #c23b3b;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: "IBM Plex Sans", system-ui, sans-serif;
+  }
+
+  header {
+    padding: 28px 24px 16px;
+    border-bottom: 1px solid var(--panel-border);
+  }
+  h1 { margin: 0 0 4px; font-size: 20px; font-weight: 600; letter-spacing: 0.01em; }
+  header p { margin: 0; color: var(--text-dim); font-size: 13px; font-family: "IBM Plex Mono", monospace; }
+
+  #gallery {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 20px;
+    padding: 20px 24px 40px;
+  }
+
+  .card {
+    border: 1px solid var(--panel-border); border-radius: 10px;
+    overflow: hidden; background: var(--bg);
+    display: flex; flex-direction: column;
+  }
+  .card-head {
+    padding: 10px 12px; display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
+    border-bottom: 1px solid var(--panel-border);
+  }
+  .card-title { font-size: 13px; font-weight: 500; }
+  .card-meta { font-size: 11px; color: var(--text-dim); font-family: "IBM Plex Mono", monospace; white-space: nowrap; }
+  .badge {
+    display: inline-block; padding: 1px 7px; border-radius: 999px;
+    font-size: 10px; font-family: "IBM Plex Mono", monospace; font-weight: 500;
+    text-transform: uppercase; letter-spacing: 0.03em; margin-left: 6px;
+  }
+  .badge.success { background: #e6f6ec; color: var(--ok); }
+  .badge.failure { background: #fbeaea; color: var(--fail); }
+
+  .canvas-wrap { position: relative; aspect-ratio: 4 / 3; background: var(--bg); }
+  .canvas-wrap canvas { display: block; width: 100%; height: 100%; }
+  .card-loading {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    font-family: "IBM Plex Mono", monospace; color: var(--text-dim); font-size: 12px;
+    background: var(--bg); text-align: center; padding: 12px;
+  }
+  .card-hint {
+    position: absolute; bottom: 8px; left: 8px;
+    font-size: 10px; color: var(--text-dim); font-family: "IBM Plex Mono", monospace;
+    background: rgba(244, 245, 247, 0.9); border: 1px solid var(--panel-border);
+    padding: 2px 6px; border-radius: 4px; pointer-events: none; transition: opacity 0.5s ease;
+  }
+
+  .card-controls {
+    padding: 8px 12px; display: flex; align-items: center; gap: 8px;
+    border-top: 1px solid var(--panel-border); background: var(--panel);
+  }
+  .playbtn {
+    width: 24px; height: 24px; flex: none; border-radius: 50%;
+    background: var(--accent-soft); border: 1px solid var(--accent);
+    color: var(--accent); cursor: pointer; display: flex; align-items: center; justify-content: center;
+    font-size: 10px; padding: 0;
+  }
+  .playbtn:hover { background: var(--accent); color: #fff; }
+  .scrub { flex: 1; accent-color: var(--accent); height: 3px; }
+  .readout {
+    font-family: "IBM Plex Mono", monospace; font-size: 10px; color: var(--text-dim);
+    white-space: nowrap; font-variant-numeric: tabular-nums; min-width: 62px; text-align: right;
+  }
+
+  #legend {
+    display: flex; align-items: center; gap: 8px;
+    font-family: "IBM Plex Mono", monospace; font-size: 11px; color: var(--text-dim);
+    margin-top: 8px;
+  }
+  #legend-grad {
+    width: 70px; height: 7px; border-radius: 3px;
+    background: linear-gradient(90deg, var(--track-lo), var(--track-hi));
+    border: 1px solid var(--panel-border);
+  }
+
+  #empty {
+    padding: 40px 24px; color: var(--text-dim); font-family: "IBM Plex Mono", monospace; font-size: 13px;
+  }
+
+  @media (max-width: 480px) {
+    #gallery { grid-template-columns: 1fr; padding: 16px; gap: 16px; }
+    header { padding: 20px 16px 14px; }
+  }
+</style>
+
+<header>
+  <h1>Track Gallery</h1>
+  <p>predicted 3D track &middot; dense point cloud &middot; per-episode playback</p>
+  <div id="legend">
+    <span>disp &le; 1cm</span>
+    <div id="legend-grad"></div>
+    <span>max</span>
+  </div>
+</header>
+
+<div id="gallery"></div>
+<div id="empty" hidden>manifest.json has no episodes yet.</div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+window.addEventListener("error", (e) => reportGlobalError(e.message));
+window.addEventListener("unhandledrejection", (e) => reportGlobalError(e.reason && e.reason.message ? e.reason.message : String(e.reason)));
+function reportGlobalError(msg) {
+  const gallery = document.getElementById("gallery");
+  if (gallery && !gallery.dataset.errored) {
+    gallery.dataset.errored = "1";
+    const div = document.createElement("div");
+    div.style.cssText = "grid-column:1/-1;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#c23b3b;padding:16px;border:1px solid #f0c4c4;border-radius:8px;background:#fbeaea;";
+    div.textContent = "failed to load: " + msg;
+    gallery.prepend(div);
+  }
+}
+
+const MOVE_THRESH = 0.01;
+const SOURCE_FPS = 10;
+
+// One shared render loop drives every card's renderer -- N independent
+// three.js scenes (own camera/controls/geometry), N renderer.render() calls
+// per frame, so orbit/zoom/playback are fully independent per card.
+const activeViewers = [];
+function globalTick(now) {
+  for (const v of activeViewers) v.tick(now);
+  requestAnimationFrame(globalTick);
+}
+requestAnimationFrame(globalTick);
+
+// Binary layout (see scripts/export_trackvis_binary.py): the dense point
+// cloud is only captured every few chunks (long episodes would otherwise
+// blow past the per-file export budget), so chunks reference a shared
+// snapshot table by index instead of each carrying their own xyz/rgb.
+function parseTrackvisB64(b64) {
+  const bin = atob(b64);
+  const buf = new ArrayBuffer(bin.length);
+  const bytes = new Uint8Array(buf);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const dv = new DataView(buf);
+  let off = 0;
+  const nC = dv.getUint32(off, true); off += 4;
+  const nS = dv.getUint32(off, true); off += 4;
+  const nD = dv.getUint32(off, true); off += 4;
+  const nP = dv.getUint32(off, true); off += 4;
+  const H = dv.getUint32(off, true); off += 4;
+
+  const snapshots = [];
+  for (let i = 0; i < nS; i++) {
+    const xyz = new Float32Array(buf.slice(off, off + nD * 3 * 4)); off += nD * 3 * 4;
+    const rgb = new Uint8Array(buf.slice(off, off + nD * 3)); off += nD * 3;
+    snapshots.push({ xyz, rgb });
+  }
+
+  const cs = [];
+  let maxMag = MOVE_THRESH * 3;
+  for (let i = 0; i < nC; i++) {
+    const nFrames = dv.getUint32(off, true); off += 4;
+    const snapshotIdx = dv.getUint32(off, true); off += 4;
+    const patchCenters = new Float32Array(buf.slice(off, off + nP * 3 * 4)); off += nP * 3 * 4;
+    const trackPred = new Float32Array(buf.slice(off, off + nP * H * 3 * 4)); off += nP * H * 3 * 4;
+
+    const mag = new Float32Array(nP);
+    for (let p = 0; p < nP; p++) {
+      const base = (p * H + (H - 1)) * 3;
+      const dx = trackPred[base], dy = trackPred[base + 1], dz = trackPred[base + 2];
+      const m = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      mag[p] = m;
+      if (m > maxMag) maxMag = m;
+    }
+    cs.push({ nFrames, snapshotIdx, patchCenters, trackPred, mag });
+  }
+  return { chunks: cs, snapshots, nDense: nD, nPatch: nP, horizon: H, globalMaxMag: maxMag };
+}
+
+function colorForMag(m, globalMaxMag) {
+  const t = Math.max(0, Math.min(1, (m - MOVE_THRESH) / Math.max(globalMaxMag - MOVE_THRESH, 1e-6)));
+  return [1.0, t, 0.0]; // red -> yellow, matches cv2.COLORMAP_AUTUMN
+}
+
+// One independent viewer: own scene/camera/renderer/controls/playback state.
+// canvasWrap: the .canvas-wrap element to render into.
+// controlsEl: {playbtn, scrub, readout} for this card's mini transport.
+function createViewer(canvasWrap, controlsEl) {
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(45, 4 / 3, 0.01, 100);
+  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setClearColor(0xffffff, 1);
+  canvasWrap.appendChild(renderer.domElement);
+
+  const controls = new THREE.OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.08;
+  controls.rotateSpeed = 0.6;
+
+  const pointsGeom = new THREE.BufferGeometry();
+  const pointsMat = new THREE.PointsMaterial({ size: 0.007, vertexColors: true, sizeAttenuation: true });
+  scene.add(new THREE.Points(pointsGeom, pointsMat));
+
+  // Track rendering: a thin LineSegments for the crisp path, PLUS a Points
+  // object reusing the exact same geometry/buffers (every line vertex is
+  // also a dot) at a larger size to fake a thicker stroke -- WebGL's
+  // gl.lineWidth is capped at 1px on most platforms (browsers don't honor
+  // THREE.LineBasicMaterial's linewidth), so this is the reliable way to
+  // get a visibly thicker track without pulling in the fat-lines (Line2/
+  // LineMaterial) example modules.
+  const trackGeom = new THREE.BufferGeometry();
+  const trackMat = new THREE.LineBasicMaterial({ vertexColors: true });
+  scene.add(new THREE.LineSegments(trackGeom, trackMat));
+  const trackDotsMat = new THREE.PointsMaterial({ size: 0.014, vertexColors: true, sizeAttenuation: true, transparent: true, opacity: 0.9 });
+  scene.add(new THREE.Points(trackGeom, trackDotsMat));
+
+  const anchorGeom = new THREE.BufferGeometry();
+  const anchorMat = new THREE.PointsMaterial({ size: 0.012, color: 0x111111 });
+  scene.add(new THREE.Points(anchorGeom, anchorMat));
+
+  let chunks = [], snapshots = [], nDense = 0, nPatch = 0, horizon = 0, globalMaxMag = MOVE_THRESH * 3;
+  let curIdx = -1, playing = false, elapsed = 0, totalSeconds = 0, lastT = performance.now();
+
+  function resize() {
+    const w = canvasWrap.clientWidth, h = canvasWrap.clientHeight;
+    if (w === 0 || h === 0) return;
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+    renderer.setSize(w, h);
+  }
+  new ResizeObserver(resize).observe(canvasWrap);
+
+  function allocBuffers() {
+    pointsGeom.setAttribute("position", new THREE.BufferAttribute(new Float32Array(nDense * 3), 3));
+    pointsGeom.setAttribute("color", new THREE.BufferAttribute(new Float32Array(nDense * 3), 3));
+    const maxTrackVerts = nPatch * horizon * 2;
+    trackGeom.setAttribute("position", new THREE.BufferAttribute(new Float32Array(maxTrackVerts * 3), 3));
+    trackGeom.setAttribute("color", new THREE.BufferAttribute(new Float32Array(maxTrackVerts * 3), 3));
+    trackGeom.setDrawRange(0, 0);
+    anchorGeom.setAttribute("position", new THREE.BufferAttribute(new Float32Array(nPatch * 3), 3));
+    anchorGeom.setDrawRange(0, 0);
+  }
+
+  function frameCamera() {
+    let minX = Infinity, minY = Infinity, minZ = Infinity, maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+    let nonZero = 0;
+    for (const s of snapshots) {
+      for (let p = 0; p < nDense; p++) {
+        const x = s.xyz[p * 3], y = s.xyz[p * 3 + 1], z = s.xyz[p * 3 + 2];
+        if (x === 0 && y === 0 && z === 0) continue;
+        nonZero++;
+        if (x < minX) minX = x; if (x > maxX) maxX = x;
+        if (y < minY) minY = y; if (y > maxY) maxY = y;
+        if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+      }
+    }
+    // Defensive fallback: if every dense point happened to be exactly at
+    // the origin (all-invalid depth) the min/max sentinels never update
+    // and min/maxX etc. stay +-Infinity, producing NaN camera position
+    // that WebGL silently fails to rasterize (blank canvas, no error) --
+    // fall back to a small centered box instead of propagating NaN.
+    let cx, cy, cz, half;
+    if (nonZero === 0 || !isFinite(minX)) {
+      cx = 0; cy = 0; cz = 0; half = 0.5;
+      controlsEl.readout.dataset.diag = "no valid dense points (nonZero=0)";
+    } else {
+      cx = (minX + maxX) / 2; cy = (minY + maxY) / 2; cz = (minZ + maxZ) / 2;
+      half = Math.max(maxX - minX, maxY - minY, maxZ - minZ) / 2 * 1.15 || 0.3;
+      controlsEl.readout.dataset.diag = `bbox ok, ${nonZero}pts, half=${half.toFixed(2)}`;
+    }
+    controls.target.set(cx, cy, cz);
+    camera.up.set(0, 0, 1);
+    camera.position.set(cx + half * 1.4, cy - half * 1.4, cz + half * 1.1);
+    camera.lookAt(cx, cy, cz);
+    controls.update();
+  }
+
+  function setChunk(idx) {
+    const c = chunks[idx];
+    const snap = snapshots[c.snapshotIdx];
+    const posAttr = pointsGeom.getAttribute("position"), colAttr = pointsGeom.getAttribute("color");
+    posAttr.array.set(snap.xyz);
+    for (let i = 0; i < nDense * 3; i++) colAttr.array[i] = snap.rgb[i] / 255;
+    posAttr.needsUpdate = true; colAttr.needsUpdate = true;
+
+    const trackPos = trackGeom.getAttribute("position"), trackCol = trackGeom.getAttribute("color");
+    const anchorPos = anchorGeom.getAttribute("position");
+    let vtx = 0, anchorN = 0;
+    for (let p = 0; p < nPatch; p++) {
+      if (c.mag[p] <= MOVE_THRESH) continue;
+      const [r, g, b] = colorForMag(c.mag[p], globalMaxMag);
+      const pcx = c.patchCenters[p * 3], pcy = c.patchCenters[p * 3 + 1], pcz = c.patchCenters[p * 3 + 2];
+      let prevX = pcx, prevY = pcy, prevZ = pcz;
+      for (let h = 0; h < horizon; h++) {
+        const base = (p * horizon + h) * 3;
+        const x = pcx + c.trackPred[base], y = pcy + c.trackPred[base + 1], z = pcz + c.trackPred[base + 2];
+        trackPos.array[vtx * 3] = prevX; trackPos.array[vtx * 3 + 1] = prevY; trackPos.array[vtx * 3 + 2] = prevZ;
+        trackCol.array[vtx * 3] = r; trackCol.array[vtx * 3 + 1] = g; trackCol.array[vtx * 3 + 2] = b;
+        vtx++;
+        trackPos.array[vtx * 3] = x; trackPos.array[vtx * 3 + 1] = y; trackPos.array[vtx * 3 + 2] = z;
+        trackCol.array[vtx * 3] = r; trackCol.array[vtx * 3 + 1] = g; trackCol.array[vtx * 3 + 2] = b;
+        vtx++;
+        prevX = x; prevY = y; prevZ = z;
+      }
+      anchorPos.array[anchorN * 3] = pcx; anchorPos.array[anchorN * 3 + 1] = pcy; anchorPos.array[anchorN * 3 + 2] = pcz;
+      anchorN++;
+    }
+    trackGeom.setDrawRange(0, vtx);
+    trackPos.needsUpdate = true; trackCol.needsUpdate = true;
+    anchorGeom.setDrawRange(0, anchorN);
+    anchorPos.needsUpdate = true;
+  }
+
+  function idxForElapsed(t) {
+    let acc = 0;
+    for (let i = 0; i < chunks.length; i++) {
+      acc += chunks[i].nFrames / SOURCE_FPS;
+      if (t < acc) return i;
+    }
+    return chunks.length - 1;
+  }
+
+  function applyIdx(i) {
+    if (i === curIdx) return;
+    curIdx = i;
+    setChunk(i);
+    controlsEl.scrub.value = i;
+    controlsEl.readout.textContent = `${elapsed.toFixed(1)}s/${totalSeconds.toFixed(1)}s`;
+  }
+
+  controlsEl.playbtn.addEventListener("click", () => {
+    playing = !playing;
+    controlsEl.playbtn.innerHTML = playing ? "&#10074;&#10074;" : "&#9654;";
+    if (playing && elapsed >= totalSeconds - 0.01) elapsed = 0;
+  });
+  controlsEl.scrub.addEventListener("input", () => {
+    playing = false; controlsEl.playbtn.innerHTML = "&#9654;";
+    const i = parseInt(controlsEl.scrub.value, 10);
+    elapsed = chunks.slice(0, i).reduce((s, c) => s + c.nFrames / SOURCE_FPS, 0);
+    applyIdx(i);
+  });
+
+  function tick(now) {
+    const dt = (now - lastT) / 1000;
+    lastT = now;
+    if (playing && chunks.length) {
+      elapsed += dt;
+      if (elapsed >= totalSeconds) { elapsed = totalSeconds; playing = false; controlsEl.playbtn.innerHTML = "&#9654;"; }
+      applyIdx(idxForElapsed(elapsed));
+      controlsEl.readout.textContent = `${elapsed.toFixed(1)}s/${totalSeconds.toFixed(1)}s`;
+    }
+    controls.update();
+    renderer.render(scene, camera);
+  }
+
+  async function load(entry) {
+    const res = await fetch(entry.file);
+    if (!res.ok) throw new Error(`fetch ${entry.file} -> HTTP ${res.status}`);
+    const { b64 } = await res.json();
+    if (!b64) throw new Error(`${entry.file}: no "b64" field`);
+    const parsed = parseTrackvisB64(b64);
+    chunks = parsed.chunks; snapshots = parsed.snapshots; nDense = parsed.nDense; nPatch = parsed.nPatch;
+    horizon = parsed.horizon; globalMaxMag = parsed.globalMaxMag;
+    allocBuffers();
+    resize();
+    const sizeDiag = `canvas=${canvasWrap.clientWidth}x${canvasWrap.clientHeight}`;
+    frameCamera();
+    curIdx = -1; elapsed = 0;
+    totalSeconds = chunks.reduce((s, c) => s + c.nFrames / SOURCE_FPS, 0);
+    controlsEl.scrub.max = chunks.length - 1;
+    applyIdx(0);
+    // Temporary on-page diagnostic (no browser devtools access on our end) --
+    // shows canvas size + bbox computation so a rendering issue is visible
+    // without needing console access. Remove once confirmed working.
+    controlsEl.readout.textContent = `${sizeDiag} | ${controlsEl.readout.dataset.diag || "no diag"}`;
+  }
+
+  activeViewers.push({ tick });
+  return { load };
+}
+
+function makeCard(entry) {
+  const card = document.createElement("div");
+  card.className = "card";
+  const outcomeClass = entry.outcome === "success" ? "success" : "failure";
+  card.innerHTML = `
+    <div class="card-head">
+      <span class="card-title">${entry.label}<span class="badge ${outcomeClass}">${entry.outcome}</span></span>
+      <span class="card-meta">${entry.setting}</span>
+    </div>
+    <div class="canvas-wrap">
+      <div class="card-loading">loading&hellip;</div>
+      <div class="card-hint">drag &middot; scroll</div>
+    </div>
+    <div class="card-controls">
+      <button class="playbtn">&#9654;</button>
+      <input class="scrub" type="range" min="0" max="0" value="0" step="1">
+      <span class="readout">0.0s/0.0s</span>
+    </div>
+  `;
+  return card;
+}
+
+(async function () {
+  const gallery = document.getElementById("gallery");
+  const manifestRes = await fetch("manifest.json");
+  if (!manifestRes.ok) throw new Error(`fetch manifest.json -> HTTP ${manifestRes.status}`);
+  const manifest = await manifestRes.json();
+
+  if (!manifest.episodes || !manifest.episodes.length) {
+    document.getElementById("empty").hidden = false;
+    return;
+  }
+
+  for (const entry of manifest.episodes) {
+    const card = makeCard(entry);
+    gallery.appendChild(card);
+    const canvasWrap = card.querySelector(".canvas-wrap");
+    const loadingEl = card.querySelector(".card-loading");
+    const hint = card.querySelector(".card-hint");
+    const viewer = createViewer(canvasWrap, {
+      playbtn: card.querySelector(".playbtn"),
+      scrub: card.querySelector(".scrub"),
+      readout: card.querySelector(".readout"),
+    });
+    canvasWrap.querySelector("canvas").addEventListener("pointerdown", () => { hint.style.opacity = "0"; }, { once: true });
+    viewer.load(entry).then(() => {
+      loadingEl.style.display = "none";
+    }).catch((err) => {
+      loadingEl.textContent = "failed: " + (err && err.message ? err.message : String(err));
+      console.error(`episode ${entry.key} failed:`, err);
+    });
+  }
+})().catch((err) => reportGlobalError(err && err.message ? err.message : String(err)));
+</script>

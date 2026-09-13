@@ -1,0 +1,15 @@
+# Minimal deps for TRAINING ONLY (no sim/eval — eval needs the full
+# RoboTwin + SAPIEN stack and is meant to run where the sim works).
+# Versions matched to the working local env (torch 2.4.1+cu121).
+torch==2.4.1
+hydra-core>=1.3
+omegaconf>=2.3
+zarr==2.18.3
+numcodecs<0.16
+numpy<2
+einops
+diffusers==0.38.0
+termcolor
+tqdm
+wandb
+h5py

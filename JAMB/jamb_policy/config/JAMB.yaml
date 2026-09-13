@@ -1,0 +1,193 @@
+defaults:
+  - task: handover_block
+name: JAMB
+
+task_name: null
+shape_meta: ${task.shape_meta}
+exp_name: "JAMB"
+
+horizon: 16
+n_obs_steps: 1
+n_action_steps: 16
+n_latency_steps: 0
+observation_chunk: 20
+interval: 5
+model_3d: pi3
+dataset_obs_steps: ${n_obs_steps}
+use_pi3_features: false
+use_dino_features: true  # requires dino_features in the tracks HDF5 (add_dinov2_to_tracks.py)
+aux_task: track  # "track": 3D displacement regression | "pmp": future pi3 feature prediction
+joint_diffusion: true  # tracks denoised together with actions (DiPT plan §9); false = one-shot regression head
+track_key: "3d_track"          # HDF5/zarr key for 3D track data (matches scripts/generate_gt_tracks.py's output)
+mask_key: "track_valid_mask"   # HDF5/zarr key for track valid mask (matches scripts/generate_gt_tracks.py's output)
+run_tag: "actionrope"  # experiment label, appended to the run dir and wandb name, e.g. "dinov2reg"
+
+policy:
+  _target_: jamb_policy.policy.jamb.JAMBPolicy
+
+  # Pi3 config
+  use_pi3_features: ${use_pi3_features}
+  pi3_model_name_or_path: "pretrained/Pi3"
+  pi3_feature_dim: 1024
+  pi3_num_views: 1
+  pi3_embed_dim: 1024
+
+  # DinoV2 config (same 17x23 grid as Pi3; shares patch_centers for RoPE)
+  use_dino_features: ${use_dino_features}
+  dino_feature_dim: 1024
+  dino_model_name: "dinov2_vitl14_reg"
+  dino_repo_dir: "thirdparty/dinov2"
+  dino_weights_path: "pretrained/dinov2_vitl14_reg4_pretrain.pth"
+
+  # Joint scene-action diffusion (tracks as diffusion variable, same k as actions)
+  joint_diffusion: ${joint_diffusion}
+  bridge_mode: concat_selfattn  # scene+track fused per-patch (concat+proj); action+track+state+timestep denoised in one self-attention stack, no cross-attention
+  joint_track_loss_weight: 0.0001  # lambda: at 0.001 (post-RMS-norm) measured track contribution ≈ 0.4-0.8x action_loss; 10x lower here ≈ 0.04-0.08x
+  track_temporal_dim: 512        # per-point temporal encoder width
+  movement_loss_tau: 0.01        # sigmoid threshold (meters): patches moving > tau get weight≈1
+  movement_loss_alpha: 0.0       # minimum weight for static patches (0=fully suppress static)
+
+  # 4D RoPE (world-frame x,y,z meters + action-step time axis)
+  use_rope4d: true
+  rope_spatial_base: 100.0
+  rope_time_base: 100.0
+  rope_spatial_scale: 0.01  # xyz normalization (was 0.5; validated via RoPE-frequency ablation, larger effective rotation range outperforms under-rotated default)
+  rope_time_scale: 16.0     # t normalization: action horizon
+
+  # State encoder config (16 = [L pose7, L grip, R pose7, R grip], split per arm)
+  state_dim: 16
+  state_embed_dim: 1024
+
+  # Transformer decoder config (for denoising)
+  decoder_depth: 4
+  decoder_heads: 8
+  decoder_dim_feedforward: 3200
+  decoder_dropout: 0.1
+
+  horizon: ${horizon}
+  n_action_steps: ${n_action_steps}
+  n_obs_steps: ${n_obs_steps}
+  track_horizon: ${n_action_steps}
+  aux_task: ${aux_task}
+
+  noise_scheduler:
+    _target_: diffusers.schedulers.scheduling_ddim.DDIMScheduler
+    num_train_timesteps: 100
+    beta_start: 0.0001
+    beta_end: 0.02
+    beta_schedule: squaredcos_cap_v2
+    clip_sample: True
+    set_alpha_to_one: True
+    steps_offset: 0
+    prediction_type: sample  # predict clean sample (not noise!)
+
+  # Track gets its own scheduler instance (identical alpha_bar schedule, so
+  # action and track stay in lockstep at the same timestep/noise level).
+  # Only clip_sample_range differs: the RMS track normalizer only controls
+  # the second moment (rms=1), not the max - ~13% of valid track components
+  # exceed 1.0 and the tail runs to ~9x rms (99th pctile ~4.8), so
+  # clip_sample_range=1.0 was silently truncating real moving-patch signal
+  # every denoising step. 5.0 covers ~99th percentile.
+  track_noise_scheduler:
+    _target_: diffusers.schedulers.scheduling_ddim.DDIMScheduler
+    num_train_timesteps: 100
+    beta_start: 0.0001
+    beta_end: 0.02
+    beta_schedule: squaredcos_cap_v2
+    clip_sample: True
+    clip_sample_range: 10.0
+    set_alpha_to_one: True
+    steps_offset: 0
+    prediction_type: sample
+
+  num_inference_steps: 10
+  shape_meta: ${shape_meta}
+
+
+ema:
+  _target_: jamb_policy.model.diffusion.ema_model.EMAModel
+  update_after_step: 0
+  inv_gamma: 1.0
+  power: 0.75
+  min_value: 0.0
+  max_value: 0.9999
+
+dataloader:
+  batch_size: 128  # Smaller batch size for large vision models
+  num_workers: 8
+  shuffle: True
+  pin_memory: False
+  persistent_workers: True
+
+val_dataloader:
+  batch_size: 128
+  num_workers: 8
+  shuffle: False
+  pin_memory: False
+  persistent_workers: True
+
+optimizer:
+  _target_: torch.optim.AdamW
+  lr: 1.0e-4
+  betas: [0.9, 0.999]
+  eps: 1.0e-8
+  weight_decay: 1.0e-6
+
+training:
+  device: "cuda:0"
+  seed: 0
+  debug: False
+  amp: True  # bf16 autocast on the forward/loss pass; portable to sm_80+ (Ampere and later)
+  resume: True
+  lr_scheduler: cosine
+  lr_warmup_steps: 500
+  num_epochs: 200
+  gradient_accumulate_every: 1
+  use_ema: True
+  rollout_every: 10
+  checkpoint_every: 50
+  val_every: 10
+  sample_every: 20
+  val_ratio: 0.05
+  max_train_steps: null
+  max_val_steps: null
+  tqdm_interval_sec: 1.0
+
+logging:
+  group: ${exp_name}
+  id: null
+  mode: offline
+  name: ${exp_name}
+  project: RoboTwin_JAMB
+  resume: true
+  tags:
+  - RoboTwin
+  - JAMB
+
+checkpoint:
+  save_ckpt: True
+  topk:
+    monitor_key: train_loss
+    mode: min
+    k: 5
+    format_str: 'epoch={epoch:04d}-train_loss={train_loss:.3f}.ckpt'
+  save_last_ckpt: True
+  save_last_snapshot: False
+
+hydra:
+  job:
+    override_dirname: ${name}
+  run:
+    dir: data/outputs/${now:%Y.%m.%d}/${now:%H.%M.%S}_${name}_${task_name}${tag_suffix:${run_tag}}
+  sweep:
+    dir: data/outputs/${now:%Y.%m.%d}/${now:%H.%M.%S}_${name}_${task_name}${tag_suffix:${run_tag}}
+    subdir: ${hydra.job.num}
+
+multi_run:
+  run_dir: data/outputs/${now:%Y.%m.%d}/${now:%H.%M.%S}_${name}_${task_name}${tag_suffix:${run_tag}}
+  wandb_name_base: ${now:%Y.%m.%d-%H.%M.%S}_${name}_${task_name}${tag_suffix:${run_tag}}
+
+checkpoint_num: 200
+expert_data_num: 100
+raw_task_name: none
+setting: demo_clean_depth
