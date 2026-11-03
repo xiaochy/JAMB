@@ -1,0 +1,18 @@
+{
+  "episodes": [
+    {
+      "key": "clean_stack_blocks_two_ep0",
+      "label": "stack_blocks_two · episode 0",
+      "setting": "clean",
+      "outcome": "success",
+      "file": "episodes/clean_stack_blocks_two_ep0.json"
+    },
+    {
+      "key": "hard_stack_blocks_two_ep0",
+      "label": "stack_blocks_two · episode 0",
+      "setting": "hard (demo_randomized)",
+      "outcome": "failure",
+      "file": "episodes/hard_stack_blocks_two_ep0.json"
+    }
+  ]
+}
